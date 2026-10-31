@@ -1,6 +1,57 @@
-
 import streamlit as st
 import pandas as pd
+import torch
+import torch.nn as nn
+from torchvision import models, transforms
+from PIL import Image
+import json
+from pathlib import Path
+
+
+# Model file paths
+MODEL_DIR = Path(__file__).parent / "models"
+MODEL_PATH = MODEL_DIR / "ilorin_waste_classifier.pth"
+CLASS_NAMES_PATH = MODEL_DIR / "waste_class_names.json"
+
+
+# Load the trained waste classification model
+@st.cache_resource
+def load_waste_model():
+
+    with open(CLASS_NAMES_PATH, "r", encoding="utf-8") as file:
+        class_names = json.load(file)
+
+    model = models.mobilenet_v3_small(weights=None)
+
+    num_features = model.classifier[3].in_features
+
+    model.classifier[3] = nn.Linear(
+        num_features,
+        len(class_names)
+    )
+
+    state_dict = torch.load(
+        MODEL_PATH,
+        map_location="cpu",
+        weights_only=True
+    )
+
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    return model, class_names
+
+
+# Image preprocessing
+image_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+
 
 st.set_page_config(
     page_title="Ilorin Smart Waste",
@@ -50,7 +101,8 @@ page = st.sidebar.radio(
     [
         "Dashboard",
         "Report Waste",
-        "Area Analysis"
+        "Area Analysis",
+        "AI Waste Classifier"
     ]
 )
 
@@ -218,8 +270,82 @@ elif page == "Area Analysis":
         "community needs."
     )
 
+
+# AI Waste Classifier
+elif page == "AI Waste Classifier":
+
+    st.header("AI Waste Image Classifier")
+
+    st.write(
+        "Upload a photograph of a waste item to see which "
+        "of the six categories the trained model predicts."
+    )
+
+    st.info(
+        "This AI model provides an estimate. It may make mistakes "
+        "and currently recognises cardboard, glass, metal, paper, "
+        "plastic and trash."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload a waste image",
+        type=["jpg", "jpeg", "png"]
+    )
+
+    if uploaded_file is not None:
+
+        image = Image.open(uploaded_file).convert("RGB")
+
+        st.image(
+            image,
+            caption="Uploaded waste image",
+            use_container_width=True
+        )
+
+        if st.button("Classify Waste"):
+
+            try:
+                model, class_names = load_waste_model()
+
+                input_tensor = image_transform(image).unsqueeze(0)
+
+                with torch.no_grad():
+                    outputs = model(input_tensor)
+                    probabilities = torch.softmax(outputs, dim=1)
+                    confidence, predicted_index = probabilities.max(dim=1)
+
+                predicted_class = class_names[predicted_index.item()]
+                confidence_score = confidence.item() * 100
+
+                st.success(
+                    f"Predicted waste category: {predicted_class.title()}"
+                )
+
+                st.metric(
+                    "Model confidence",
+                    f"{confidence_score:.2f}%"
+                )
+
+                st.caption(
+                    "Confidence is the model's estimated score, "
+                    "not a guarantee that the prediction is correct."
+                )
+
+            except FileNotFoundError:
+                st.error(
+                    "Model files not found. Check that both model "
+                    "files are inside the models folder next to app.py."
+                )
+
+            except Exception as error:
+                st.error(
+                    f"Could not classify this image: {error}"
+                )
+
+
 st.divider()
 
 st.caption(
     "Ilorin Smart Waste | Environmental Innovation Prototype"
 )
+
