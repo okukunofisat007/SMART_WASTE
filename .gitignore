@@ -1,0 +1,26 @@
+# Secrets and credentials
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+
+# Python environment
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Temporary files
+.pytest_cache/
+.mypy_cache/
+
+# Local uploads and private data
+uploads/
+data/private/
+database_backup/
+*.bak
+*.dump
+
+# Operating system files
+.DS_Store
+Thumbs.db

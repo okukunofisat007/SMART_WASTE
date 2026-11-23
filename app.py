@@ -1,5 +1,4 @@
-import streamlit as st
-import pandas as pd
+# for AI classifier
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
@@ -8,42 +7,55 @@ import json
 from pathlib import Path
 
 
-# Model file paths
-MODEL_DIR = Path(__file__).parent / "models"
-MODEL_PATH = MODEL_DIR / "ilorin_waste_classifier.pth"
-CLASS_NAMES_PATH = MODEL_DIR / "waste_class_names.json"
+import streamlit as st
+import pandas as pd
+from db import save_waste_report, get_all_reports
+from streamlit_geolocation import streamlit_geolocation
+
+import folium
+from streamlit_folium import st_folium
+from db import get_map_reports
+
+# ==================================
+# LOAD AI WASTE CLASSIFICATION MODEL
+# ==================================
+
+BASE_DIR = Path(__file__).parent
+
+MODEL_PATH = BASE_DIR / "models" / "ilorin_waste_classifier.pth"
+
+CLASS_NAMES_PATH = BASE_DIR / "models" / "waste_class_names.json"
 
 
-# Load the trained waste classification model
-@st.cache_resource
-def load_waste_model():
+# Load waste category names
+with open(CLASS_NAMES_PATH, "r") as file:
+    class_names = json.load(file)
 
-    with open(CLASS_NAMES_PATH, "r", encoding="utf-8") as file:
-        class_names = json.load(file)
 
-    model = models.mobilenet_v3_small(weights=None)
+# Create MobileNetV3 Small architecture
+model = models.mobilenet_v3_small(weights=None)
 
-    num_features = model.classifier[3].in_features
+# Update final classification layer
+model.classifier[3] = nn.Linear(
+    model.classifier[3].in_features,
+    len(class_names)
+)
 
-    model.classifier[3] = nn.Linear(
-        num_features,
-        len(class_names)
-    )
 
-    state_dict = torch.load(
-        MODEL_PATH,
-        map_location="cpu",
-        weights_only=True
-    )
+# Load trained model weights
+state_dict = torch.load(
+    MODEL_PATH,
+    map_location=torch.device("cpu"),
+    weights_only=True
+)
 
-    model.load_state_dict(state_dict)
-    model.eval()
+model.load_state_dict(state_dict)
 
-    return model, class_names
+model.eval()
 
 
 # Image preprocessing
-image_transform = transforms.Compose([
+transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(
@@ -51,7 +63,6 @@ image_transform = transforms.Compose([
         std=[0.229, 0.224, 0.225]
     )
 ])
-
 
 st.set_page_config(
     page_title="Ilorin Smart Waste",
@@ -102,63 +113,100 @@ page = st.sidebar.radio(
         "Dashboard",
         "Report Waste",
         "Area Analysis",
-        "AI Waste Classifier"
+        "AI Waste Classifier",
+        "Waste Map"
     ]
 )
 
 # Dashboard
+
 if page == "Dashboard":
 
-    st.header("Waste Management Dashboard")
+    st.title("🌍 Ilorin Smart Waste Dashboard")
 
-    reports = st.session_state.reports
+    reports = get_all_reports()
 
-    total_reports = int(reports["Waste_Reports"].sum())
+    total_reports = len(reports)
 
-    pending_reports = int(
-        (reports["Status"] == "Pending").sum()
+    pending_reports = (
+        (reports["status"] == "Pending").sum()
+        if not reports.empty else 0
     )
 
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric(
-        "Recorded Waste Reports",
-        total_reports
+    resolved_reports = (
+        (reports["status"] == "Resolved").sum()
+        if not reports.empty else 0
     )
 
-    col2.metric(
-        "Areas Monitored",
-        len(reports)
+    total_areas = (
+        reports["area"].nunique()
+        if not reports.empty else 0
     )
 
-    col3.metric(
-        "Pending Area Records",
-        pending_reports
-    )
+    col1, col2, col3, col4 = st.columns(4)
 
-    st.subheader("Waste Management Records")
+    col1.metric("Total Reports", total_reports)
+    col2.metric("Pending Reports", pending_reports)
+    col3.metric("Resolved Reports", resolved_reports)
+    col4.metric("Areas Reporting", total_areas)
 
-    st.dataframe(
-        reports,
-        use_container_width=True,
-        hide_index=True
-    )
+    st.subheader("Recent Waste Reports")
 
-    st.caption(
-        "These figures use simulated demonstration data. "
-        "They do not represent actual citywide waste statistics."
-    )
+    if not reports.empty:
 
+        st.dataframe(
+            reports[
+                ["report_id", "area", "problem_type",
+                 "description", "status", "created_at"]
+            ],
+            use_container_width=True
+        )
+
+    else:
+        st.info("No waste reports have been submitted yet.")
+
+
+# Report Waste
 # Report Waste
 elif page == "Report Waste":
 
     st.header("Report a Waste Problem")
 
     st.write(
-        "Use this form to demonstrate how residents could "
-        "report waste disposal problems."
+        "Use this form to report waste disposal problems "
+        "in your community."
     )
 
+    # GPS LOCATION
+    st.subheader("📍 Waste Location")
+
+    location = streamlit_geolocation()
+
+    latitude = None
+    longitude = None
+    accuracy = None
+
+    if location and location.get("latitude") is not None:
+
+        latitude = location["latitude"]
+        longitude = location["longitude"]
+        accuracy = location.get("accuracy")
+
+        st.success("Location captured successfully!")
+
+        st.write("Latitude:", latitude)
+        st.write("Longitude:", longitude)
+
+        if accuracy is not None:
+            st.write("Accuracy:", accuracy, "metres")
+
+    else:
+        st.info(
+            "Click the location button and allow "
+            "your browser to access your location."
+        )
+
+    # WASTE REPORT FORM
     with st.form("waste_report_form"):
 
         area = st.text_input(
@@ -194,31 +242,26 @@ elif page == "Report Waste":
 
             else:
 
-                new_report = pd.DataFrame([{
-                    "Area": area.strip(),
-                    "Waste_Reports": 1,
-                    "Collection_Points": 0,
-                    "Status": "Pending"
-                }])
+                try:
+                    report_id = save_waste_report(
+    area.strip(),
+    waste_type,
+    description.strip(),
+    latitude,
+    longitude,
+    accuracy
+)
 
-                st.session_state.reports = pd.concat(
-                    [
-                        st.session_state.reports,
-                        new_report
-                    ],
-                    ignore_index=True
-                )
+                    st.success(
+                        f"Report submitted successfully! "
+                        f"Your Report ID is {report_id}."
+                    )
 
-                st.success(
-                    "Demonstration report submitted successfully!"
-                )
-
-                st.info(
-                    f"Problem type: {waste_type}. "
-                    "This prototype stores the report in the "
-                    "current application session. It does not "
-                    "automatically notify waste management authorities."
-                )
+                except Exception as e:
+                    st.error(
+                        f"Report submission failed: {e}"
+                    )
+               
 
 # Area Analysis
 elif page == "Area Analysis":
@@ -271,81 +314,77 @@ elif page == "Area Analysis":
     )
 
 
-# AI Waste Classifier
-elif page == "AI Waste Classifier":
 
-    st.header("AI Waste Image Classifier")
+# Waste Map
+elif page == "Waste Map":
+
+    st.header("🗺️ Waste Location Map")
 
     st.write(
-        "Upload a photograph of a waste item to see which "
-        "of the six categories the trained model predicts."
+        "View reported waste locations across communities."
     )
 
-    st.info(
-        "This AI model provides an estimate. It may make mistakes "
-        "and currently recognises cardboard, glass, metal, paper, "
-        "plastic and trash."
-    )
+    reports = get_map_reports()
 
-    uploaded_file = st.file_uploader(
-        "Upload a waste image",
-        type=["jpg", "jpeg", "png"]
-    )
+    if reports.empty:
 
-    if uploaded_file is not None:
+        st.info("No reports with GPS coordinates available yet.")
 
-        image = Image.open(uploaded_file).convert("RGB")
+    else:
 
-        st.image(
-            image,
-            caption="Uploaded waste image",
-            use_container_width=True
+        # Calculate map centre
+        center_lat = reports["latitude"].mean()
+        center_lon = reports["longitude"].mean()
+
+        waste_map = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=13
         )
 
-        if st.button("Classify Waste"):
+        # Marker colours based on report status
+        status_colors = {
+            "Pending": "red",
+            "Reviewed": "orange",
+            "Approved": "blue",
+            "Rejected": "gray",
+            "Collected": "green",
+            "Resolved": "darkgreen"
+        }
 
-            try:
-                model, class_names = load_waste_model()
+        for _, row in reports.iterrows():
 
-                input_tensor = image_transform(image).unsqueeze(0)
+            color = status_colors.get(
+                row["status"],
+                "blue"
+            )
 
-                with torch.no_grad():
-                    outputs = model(input_tensor)
-                    probabilities = torch.softmax(outputs, dim=1)
-                    confidence, predicted_index = probabilities.max(dim=1)
+            popup_text = f"""
+            <b>Report ID:</b> {row['report_id']}<br>
+            <b>Area:</b> {row['area']}<br>
+            <b>Problem:</b> {row['problem_type']}<br>
+            <b>Description:</b> {row['description']}<br>
+            <b>Status:</b> {row['status']}
+            """
 
-                predicted_class = class_names[predicted_index.item()]
-                confidence_score = confidence.item() * 100
+            folium.Marker(
+                location=[
+                    row["latitude"],
+                    row["longitude"]
+                ],
+                popup=folium.Popup(
+                    popup_text,
+                    max_width=300
+                ),
+                tooltip=f"Report {row['report_id']}",
+                icon=folium.Icon(color=color)
+            ).add_to(waste_map)
 
-                st.success(
-                    f"Predicted waste category: {predicted_class.title()}"
-                )
+        st_folium(
+            waste_map,
+            width=1000,
+            height=600
+        )
 
-                st.metric(
-                    "Model confidence",
-                    f"{confidence_score:.2f}%"
-                )
-
-                st.caption(
-                    "Confidence is the model's estimated score, "
-                    "not a guarantee that the prediction is correct."
-                )
-
-            except FileNotFoundError:
-                st.error(
-                    "Model files not found. Check that both model "
-                    "files are inside the models folder next to app.py."
-                )
-
-            except Exception as error:
-                st.error(
-                    f"Could not classify this image: {error}"
-                )
-
-
-st.divider()
-
-st.caption(
-    "Ilorin Smart Waste | Environmental Innovation Prototype"
-)
-
+        st.success(
+            f"{len(reports)} waste report(s) displayed on the map."
+        )
