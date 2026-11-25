@@ -80,10 +80,6 @@ st.write(
     "waste collection services."
 )
 
-st.warning(
-    "DEMO VERSION: The initial records below are simulated. "
-    "They are not verified reports from Ilorin."
-)
 
 # Sample demonstration data
 if "reports" not in st.session_state:
@@ -113,9 +109,10 @@ page = st.sidebar.radio(
         "Dashboard",
         "Report Waste",
         "Area Analysis",
-        "AI Waste Classifier",
+        "Waste2Earn",
         "Waste Map"
-    ]
+    ],
+    index=1
 )
 
 # Dashboard
@@ -166,16 +163,16 @@ if page == "Dashboard":
         st.info("No waste reports have been submitted yet.")
 
 
-# Report Waste
-# Report Waste
+
 elif page == "Report Waste":
 
     st.header("Report a Waste Problem")
 
     st.write(
-        "Use this form to report waste disposal problems "
-        "in your community."
-    )
+    "Identify recyclable waste using AI, submit waste reports "
+    "and turn waste into value."
+)
+    
 
     # GPS LOCATION
     st.subheader("📍 Waste Location")
@@ -206,6 +203,16 @@ elif page == "Report Waste":
             "your browser to access your location."
         )
 
+    # CAMERA FEATURE
+    st.subheader("Capture Waste Image")
+
+    captured_image = st.camera_input(
+        "Take a picture of the waste",
+        key="waste_report_camera"
+    )
+
+    
+
     # WASTE REPORT FORM
     with st.form("waste_report_form"):
 
@@ -225,7 +232,7 @@ elif page == "Report Waste":
         )
 
         description = st.text_area(
-            "Describe the problem"
+            "Describe the problem (Optional)"
         )
 
         submitted = st.form_submit_button(
@@ -234,23 +241,25 @@ elif page == "Report Waste":
 
         if submitted:
 
-            if not area.strip():
-                st.error("Please enter an area name.")
+            if captured_image is None:
+                st.error("Please take a picture of the waste.")
 
-            elif not description.strip():
-                st.error("Please describe the problem.")
+            elif not area.strip():
+                st.error("Please enter an area name.")
 
             else:
 
                 try:
                     report_id = save_waste_report(
-    area.strip(),
-    waste_type,
-    description.strip(),
-    latitude,
-    longitude,
-    accuracy
-)
+                        area.strip(),
+                        waste_type,
+                        description.strip(),
+                        latitude,
+                        longitude,
+                        accuracy,
+                        image_bytes=captured_image.getvalue(),
+                        image_content_type=captured_image.type
+                    )
 
                     st.success(
                         f"Report submitted successfully! "
@@ -261,8 +270,6 @@ elif page == "Report Waste":
                     st.error(
                         f"Report submission failed: {e}"
                     )
-               
-
 # Area Analysis
 elif page == "Area Analysis":
 
@@ -314,13 +321,14 @@ elif page == "Area Analysis":
     )
 
 # AI Waste Classifier
-elif page == "AI Waste Classifier":
 
-    st.header("🤖 AI Waste Classifier")
+elif page == "Waste2Earn":
+
+    st.header("♻️ Waste2Earn")
 
     st.write(
-        "Upload an image of waste to identify its category "
-        "using our trained AI model."
+        "Capture recyclable waste, identify its category "
+        "using AI and enter the quantity."
     )
 
     st.info(
@@ -328,69 +336,113 @@ elif page == "AI Waste Classifier":
         "Paper, Plastic and Trash."
     )
 
-    uploaded_file = st.file_uploader(
-        "Upload a waste image",
-        type=["jpg", "jpeg", "png"]
+    # CAPTURE WASTE IMAGE
+    captured_image = st.camera_input(
+        "Take a picture of your waste",
+        key="waste2earn_camera"
     )
 
-    if uploaded_file is not None:
+    # CLASSIFY WASTE
+    if captured_image is not None:
 
-        image = Image.open(uploaded_file).convert("RGB")
-
-        st.image(
-            image,
-            caption="Uploaded Waste Image",
-            use_container_width=True
-        )
+        image = Image.open(captured_image).convert("RGB")
 
         if st.button("Classify Waste"):
 
             try:
-                # Transform image
                 input_tensor = transform(image).unsqueeze(0)
 
-                # Make prediction
                 with torch.no_grad():
-
                     outputs = model(input_tensor)
 
                     probabilities = torch.softmax(
-                        outputs,
-                        dim=1
+                        outputs, dim=1
                     )
 
                     confidence, predicted_index = probabilities.max(
                         dim=1
                     )
 
-                # Get predicted class
                 predicted_class = class_names[
                     predicted_index.item()
                 ]
 
                 confidence_score = confidence.item() * 100
 
-                # Display results
-                st.success(
-                    f"Predicted Waste Category: {predicted_class}"
-                )
-
-                st.metric(
-                    label="Prediction Confidence",
-                    value=f"{confidence_score:.2f}%"
-                )
-
-                st.caption(
-                    "This prediction is generated by the "
-                    "Ilorin Smart Waste AI model."
-                )
+                st.session_state["predicted_class"] = predicted_class
+                st.session_state["confidence_score"] = confidence_score
 
             except Exception as error:
+                st.error(f"Classification failed: {error}")
 
-                st.error(
-                    f"Classification failed: {error}"
-                )
+    # DISPLAY CLASSIFICATION RESULT
+    if st.session_state.get("predicted_class"):
 
+        predicted_class = st.session_state["predicted_class"]
+        confidence_score = st.session_state["confidence_score"]
+
+        st.success(
+            f"Identified Waste: {predicted_class}"
+        )
+
+        st.metric(
+            "Prediction Confidence",
+            f"{confidence_score:.2f}%"
+        )
+
+        st.divider()
+
+            # QUANTITY INPUT
+
+        st.subheader("Enter Waste Quantity")
+
+        quantity_unit = st.selectbox(
+            "Select Unit",
+            ["Pieces", "Kilograms (kg)", "Bags"]
+        )
+
+        quantity_text = st.text_input(
+            "Enter quantity",
+            placeholder="e.g. 5"
+        )
+
+        if st.button("Submit to Waste2Earn"):
+
+            if not quantity_text.strip():
+                st.warning("Please enter the quantity.")
+
+            elif not quantity_text.strip().isdigit():
+                st.warning("Please enter a whole number.")
+
+            elif int(quantity_text) <= 0:
+                st.warning("Please enter a quantity greater than zero.")
+
+            elif captured_image is None:
+                st.warning("Please capture a waste image.")
+
+            else:
+                try:
+                    quantity = int(quantity_text)
+
+                    report_id = save_waste_report(
+                        area="Waste2Earn",
+                        problem_type=predicted_class,
+                        description=f"Quantity: {quantity} {quantity_unit}",
+                        image_bytes=captured_image.getvalue(),
+                        image_content_type=captured_image.type,
+                        quantity=quantity,
+                        quantity_unit=quantity_unit
+                    )
+
+                    st.success(
+                        f"Waste submitted successfully! "
+                        f"Reference ID: {report_id}"
+                    )
+
+                except Exception as error:
+                    st.error(
+                        f"Submission failed: {error}"
+                    )
 
 # Waste Map
 elif page == "Waste Map":

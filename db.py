@@ -1,6 +1,6 @@
 import streamlit as st
 import mysql.connector
-
+from supabase import create_client
 
 def get_connection():
     config = st.secrets["mysql"]
@@ -33,181 +33,129 @@ def test_connection():
         return False, str(e)
 
 
+
+
 def save_waste_report(
     area,
     problem_type,
     description,
     latitude=None,
     longitude=None,
-    accuracy=None
+    accuracy=None,
+    image_bytes=None,
+    image_content_type="image/jpeg",
+    quantity=None,
+    quantity_unit=None
 ):
 
-    connection = get_connection()
-    cursor = connection.cursor()
+    import uuid
+    from datetime import datetime, timezone
 
-    try:
-        query = """
-            INSERT INTO waste_reports (
-                report_type,
-                area,
-                problem_type,
-                description,
-                latitude,
-                longitude,
-                location_accuracy_m,
-                location_captured_at,
-                status
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
+    config = st.secrets["supabase"]
 
-        from datetime import datetime
+    supabase = create_client(
+        config["url"],
+        config["key"]
+    )
 
-        captured_at = (
-            datetime.now()
-            if latitude is not None and longitude is not None
-            else None
+    image_path = None
+
+    # UPLOAD IMAGE TO SUPABASE STORAGE
+    if image_bytes is not None:
+
+        extension = (
+            "png" if image_content_type == "image/png"
+            else "jpg"
         )
 
-        values = (
-            "General Waste",
-            area,
-            problem_type,
-            description,
-            latitude,
-            longitude,
-            accuracy,
-            captured_at,
-            "Pending"
+        image_path = f"waste_reports/{uuid.uuid4()}.{extension}"
+
+        supabase.storage.from_("waste-images").upload(
+            image_path,
+            image_bytes,
+            file_options={
+                "content-type": image_content_type
+            }
         )
 
-        cursor.execute(query, values)
-        connection.commit()
+    captured_at = (
+        datetime.now(timezone.utc).isoformat()
+        if latitude is not None and longitude is not None
+        else None
+    )
 
-        return cursor.lastrowid
+    report_data = {
+        "report_type": "General Waste",
+        "area": area,
+        "problem_type": problem_type,
+        "description": description,
+        "latitude": latitude,
+        "longitude": longitude,
+        "location_accuracy_m": accuracy,
+        "location_captured_at": captured_at,
+        "image_path": image_path,
+        "quantity": quantity,
+        "quantity_unit": quantity_unit,
+        "status": "Pending"
+    }
 
-    finally:
-        cursor.close()
-        connection.close()
+    response = (
+        supabase
+        .table("waste_reports")
+        .insert(report_data)
+        .execute()
+    )
+
+    return response.data[0]["report_id"]
+
 
 def get_all_reports():
 
-    connection = get_connection()
+    import pandas as pd
 
-    try:
-        query = """
-            SELECT *
-            FROM waste_reports
-            ORDER BY created_at DESC
-        """
+    config = st.secrets["supabase"]
 
-        import pandas as pd
+    supabase = create_client(
+        config["url"],
+        config["key"]
+    )
 
-        df = pd.read_sql(query, connection)
+    response = (
+        supabase
+        .table("waste_reports")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
 
-        return df
+    df = pd.DataFrame(response.data)
 
-    finally:
-        connection.close()
+    return df
 
 # function that retrieves report that have GPS coordinates
+
 def get_map_reports():
 
-    connection = get_connection()
+    import pandas as pd
 
-    try:
-        import pandas as pd
+    config = st.secrets["supabase"]
 
-        query = """
-            SELECT
-                report_id,
-                area,
-                problem_type,
-                description,
-                latitude,
-                longitude,
-                status
-            FROM waste_reports
-            WHERE latitude IS NOT NULL
-            AND longitude IS NOT NULL
-        """
+    supabase = create_client(
+        config["url"],
+        config["key"]
+    )
 
-        df = pd.read_sql(query, connection)
-
-        return df
-
-    finally:
-        connection.close()
-
-
-        # USER ACOOUNT
-import bcrypt
-
-
-def create_user(full_name, email, password, role="resident", phone=None):
-
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    try:
-        # Convert password into a secure hash
-        password_hash = bcrypt.hashpw(
-            password.encode("utf-8"),
-            bcrypt.gensalt()
-        ).decode("utf-8")
-
-        query = """
-            INSERT INTO users (
-                full_name, email, phone, password_hash, role
-            )
-            VALUES (%s, %s, %s, %s, %s)
-        """
-
-        cursor.execute(
-            query,
-            (full_name, email, phone, password_hash, role)
+    response = (
+        supabase
+        .table("waste_reports")
+        .select(
+            "report_id, area, problem_type, description, latitude, longitude, status"
         )
+        .not_.is_("latitude", "null")
+        .not_.is_("longitude", "null")
+        .execute()
+    )
 
-        connection.commit()
+    df = pd.DataFrame(response.data)
 
-        return cursor.lastrowid
-
-    finally:
-        cursor.close()
-        connection.close()
-
-
-def verify_user(email, password):
-
-    connection = get_connection()
-    cursor = connection.cursor(dictionary=True)
-
-    try:
-        query = """
-            SELECT *
-            FROM users
-            WHERE email = %s AND is_active = TRUE
-        """
-
-        cursor.execute(query, (email,))
-        user = cursor.fetchone()
-
-        if user is None:
-            return None
-
-        password_matches = bcrypt.checkpw(
-            password.encode("utf-8"),
-            user["password_hash"].encode("utf-8")
-        )
-
-        if password_matches:
-            user.pop("password_hash", None)
-            return user
-
-        return None
-
-    finally:
-        cursor.close()
-        connection.close()
-
-
+    return df
