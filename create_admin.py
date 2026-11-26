@@ -1,5 +1,7 @@
-from db import create_user
+
+from auth import create_admin
 from getpass import getpass
+
 
 print("CREATE ILORIN SMART WASTE ADMIN ACCOUNT")
 
@@ -10,6 +12,7 @@ phone = input("Enter your phone number: ")
 password = getpass("Create your password: ")
 confirm_password = getpass("Confirm your password: ")
 
+
 if password != confirm_password:
     print("Passwords do not match.")
 
@@ -17,12 +20,13 @@ elif len(password) < 8:
     print("Password must contain at least 8 characters.")
 
 else:
+
     try:
-        user_id = create_user(
-            full_name,
-            email,
-            password,
-            role="admin",
+
+        user_id = create_admin(
+            full_name=full_name,
+            email=email,
+            password=password,
             phone=phone
         )
 

@@ -1,5 +1,9 @@
-streamlit
-pandas
 torch
 torchvision
 Pillow
+streamlit
+pandas
+streamlit-geolocation
+folium
+streamlit-folium
+supabase
