@@ -5,11 +5,22 @@ from torchvision import models, transforms
 from PIL import Image
 import json
 from pathlib import Path
+import hashlib
 
 
 import streamlit as st
 import pandas as pd
-from db import save_waste_report, get_all_reports
+from login import show_login
+from auth import logout_user
+from db import (
+    save_waste_report,
+    get_all_reports,
+    upload_waste_image,
+    save_waste_classification,
+    save_recycling_submission,
+    get_resident_location,
+    save_resident_location
+)
 from streamlit_geolocation import streamlit_geolocation
 
 import folium
@@ -65,61 +76,86 @@ transform = transforms.Compose([
 ])
 
 st.set_page_config(
-    page_title="Ilorin Smart Waste",
-    page_icon="🌍",
+    page_title="EcoCycly",
+    page_icon="♻️",
     layout="wide"
 )
 
-# Page title
-st.title("🌍 Ilorin Smart Waste")
-st.subheader("Smarter Waste Management, Cleaner Communities")
+# ==================================
+# USER AUTHENTICATION
+# ==================================
 
-st.write(
-    "A community-focused prototype designed to help identify "
-    "waste disposal problems and areas that may need better "
-    "waste collection services."
-)
+if not st.session_state.get("authenticated", False):
+    show_login()
+    st.stop()
 
+user = st.session_state["user"]
+user_id = user["user_id"]
 
-# Sample demonstration data
-if "reports" not in st.session_state:
-    st.session_state.reports = pd.DataFrame({
-        "Area": [
-            "Community A",
-            "Community B",
-            "Community C",
-            "Community D",
-            "Community E"
-        ],
-        "Waste_Reports": [15, 8, 22, 5, 18],
-        "Collection_Points": [1, 3, 1, 4, 2],
-        "Status": [
-            "Pending",
-            "Resolved",
-            "Pending",
-            "Pending",
-            "In Progress"
-        ]
-    })
+st.sidebar.write(f"Welcome, {user['full_name']}")
+
+if st.sidebar.button("Logout"):
+    logout_user()
+    st.rerun()
+
 
 # Navigation
 page = st.sidebar.radio(
     "Navigation",
     [
+        "Home",
         "Dashboard",
         "Report Waste",
         "Area Analysis",
         "Waste2Earn",
         "Waste Map"
     ],
-    index=1
+    index=0
 )
+
+# EcoCycly Home / Landing Page
+if page == "Home":
+
+    st.title("♻️ Welcome to EcoCycly")
+
+    st.header("Cleaner Communities Start With Us")
+
+    st.write(
+        "EcoCycly is a smart community waste management platform "
+        "designed to make waste reporting, monitoring and recycling easier."
+    )
+
+    st.markdown("### About EcoCycly")
+
+    st.write(
+        "Through image-based waste classification, location tracking "
+        "and data analysis, EcoCycly helps residents report waste "
+        "disposal problems, monitor community waste challenges and "
+        "participate in responsible recycling."
+    )
+
+    st.markdown("### What You Can Do With EcoCycly")
+
+    st.markdown("""
+    - **Report Waste:** Submit waste reports with pictures and location details.
+    - **Monitor Communities:** Explore reports and identify areas with recurring waste challenges.
+    - **Waste2Earn:** Submit recyclable materials and earn reward points.
+    - **Waste Map:** Explore reported waste locations on an interactive map.
+    """)
+
+    st.markdown("### Building Cleaner Communities Together")
+
+    st.write(
+        "Every report counts. Every recycling effort matters. "
+        "Together, we can build cleaner and more sustainable communities."
+    )
+
 
 # Dashboard
 
-if page == "Dashboard":
+elif page == "Dashboard":
 
-    st.title("🌍 Ilorin Smart Waste Dashboard")
+    st.title("Dashboard")
 
     reports = get_all_reports()
 
@@ -166,13 +202,13 @@ if page == "Dashboard":
 
 elif page == "Report Waste":
 
-    st.header("Report a Waste Problem")
+    st.title("📸 Report Waste")
 
     st.write(
-    "Identify recyclable waste using AI, submit waste reports "
-    "and turn waste into value."
-)
-    
+        "Help keep your community clean by reporting waste disposal "
+        "problems. Add a photo, describe the issue and share its location."
+    )
+
 
     # GPS LOCATION
     st.subheader("📍 Waste Location")
@@ -211,7 +247,7 @@ elif page == "Report Waste":
         key="waste_report_camera"
     )
 
-    
+
 
     # WASTE REPORT FORM
     with st.form("waste_report_form"):
@@ -248,17 +284,17 @@ elif page == "Report Waste":
                 st.error("Please enter an area name.")
 
             else:
-
                 try:
                     report_id = save_waste_report(
-                        area.strip(),
-                        waste_type,
-                        description.strip(),
-                        latitude,
-                        longitude,
-                        accuracy,
+                        area=area.strip(),
+                        problem_type=waste_type,
+                        description=description.strip(),
+                        latitude=latitude,
+                        longitude=longitude,
+                        accuracy=accuracy,
                         image_bytes=captured_image.getvalue(),
-                        image_content_type=captured_image.type
+                        image_content_type=captured_image.type,
+                        user_id=user_id
                     )
 
                     st.success(
@@ -267,60 +303,109 @@ elif page == "Report Waste":
                     )
 
                 except Exception as e:
-                    st.error(
-                        f"Report submission failed: {e}"
-                    )
-# Area Analysis
+                    st.error(f"Report submission failed: {e}")
+
+# ==================================
+# AREA ANALYSIS
+# ==================================
+
 elif page == "Area Analysis":
 
     st.header("Area Analysis")
 
-    reports = st.session_state.reports.copy()
+    reports = get_all_reports()
 
-    # Calculate a preliminary priority score
-    max_reports = max(
-        int(reports["Waste_Reports"].max()),
-        1
-    )
+    if reports.empty:
 
-    reports["Priority_Score"] = (
-        reports["Waste_Reports"] / max_reports
-        + 1 / (reports["Collection_Points"] + 1)
-    ).round(2)
+        st.info("No waste reports are available for analysis yet.")
 
-    reports = reports.sort_values(
-        by="Priority_Score",
-        ascending=False
-    )
+    else:
 
-    st.write(
-        "The following ranking is a preliminary screening "
-        "tool based on recorded reports and collection-point "
-        "counts. It is not an AI prediction."
-    )
+        # Prepare report data
+        reports = reports.copy()
 
-    st.dataframe(
-        reports[
-            [
-                "Area",
-                "Waste_Reports",
-                "Collection_Points",
-                "Priority_Score",
-                "Status"
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True
-    )
+        reports["status"] = (
+            reports["status"]
+            .fillna("Unknown")
+            .str.strip()
+            .str.title()
+        )
 
-    st.caption(
-        "A high score suggests an area for further investigation. "
-        "Real decisions require verified data on population, "
-        "waste volume, facility capacity, accessibility and "
-        "community needs."
-    )
+        # Group reports by community
+        area_analysis = (
+            reports.groupby("area")
+            .agg(
+                Waste_Reports=("report_id", "count"),
+                Pending_Reports=(
+                    "status",
+                    lambda x: (x == "Pending").sum()
+                ),
+                Resolved_Reports=(
+                    "status",
+                    lambda x: (x == "Resolved").sum()
+                )
+            )
+            .reset_index()
+            .rename(columns={"area": "Community"})
+        )
 
-# AI Waste Classifier
+        # Rank communities by report volume
+        area_analysis = area_analysis.sort_values(
+            by="Waste_Reports",
+            ascending=False
+        )
+
+        st.write(
+            "This analysis uses actual waste reports submitted "
+            "through EcoCycly. Communities are ranked by the "
+            "number of reported waste problems."
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Communities Reporting",
+            area_analysis["Community"].nunique()
+        )
+
+        col2.metric(
+            "Total Waste Reports",
+            len(reports)
+        )
+
+        col3.metric(
+            "Pending Reports",
+            (reports["status"] == "Pending").sum()
+        )
+
+        st.subheader("Community Report Analysis")
+
+        st.dataframe(
+            area_analysis,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.subheader("Waste Reports by Community")
+
+        chart_data = area_analysis.set_index("Community")[
+            "Waste_Reports"
+        ]
+
+        st.bar_chart(chart_data)
+
+        st.caption(
+            "A higher report count indicates more reported waste "
+            "problems, not necessarily a higher total waste volume. "
+            "Collection-point and population data would be needed "
+            "for a more comprehensive community priority assessment."
+        )
+
+
+
+# ==================================
+# WASTE2EARN
+# ==================================
 
 elif page == "Waste2Earn":
 
@@ -328,121 +413,288 @@ elif page == "Waste2Earn":
 
     st.write(
         "Capture recyclable waste, identify its category "
-        "using AI and enter the quantity."
+        "using AI and submit the quantity."
     )
 
-    st.info(
-        "Supported categories: Cardboard, Glass, Metal, "
-        "Paper, Plastic and Trash."
+
+    # ----------------------------------
+    # 1. CHECK AND UPDATE RESIDENT LOCATION
+    # ----------------------------------
+
+    resident_location = get_resident_location(user_id)
+
+    updating_location = st.session_state.get(
+        "update_resident_location", False
     )
 
-    # CAPTURE WASTE IMAGE
-    captured_image = st.camera_input(
-        "Take a picture of your waste",
-        key="waste2earn_camera"
-    )
+    if not resident_location or updating_location:
 
-    # CLASSIFY WASTE
-    if captured_image is not None:
+        if resident_location:
+            st.subheader("📍 Update Your Collection Location")
 
-        image = Image.open(captured_image).convert("RGB")
+            st.info(
+                "Capture your new GPS location and enter your "
+                "updated residential address and community."
+            )
+        else:
+            st.subheader("📍 Save Your Residential Location")
 
-        if st.button("Classify Waste"):
+            st.info(
+                "We need your residential location to arrange "
+                "recycling collection. You only need to save it once."
+            )
 
-            try:
-                input_tensor = transform(image).unsqueeze(0)
+        location = streamlit_geolocation()
 
-                with torch.no_grad():
-                    outputs = model(input_tensor)
+        latitude = None
+        longitude = None
+        accuracy = None
 
-                    probabilities = torch.softmax(
-                        outputs, dim=1
+        if location and location.get("latitude") is not None:
+
+            latitude = location["latitude"]
+            longitude = location["longitude"]
+            accuracy = location.get("accuracy")
+
+            st.success("GPS location captured!")
+
+            st.write("Latitude:", latitude)
+            st.write("Longitude:", longitude)
+
+            if accuracy is not None:
+                st.write("Accuracy:", accuracy, "metres")
+
+        with st.form("resident_location_form"):
+
+            residential_address = st.text_input(
+                "Residential Address",
+                value=(
+                    resident_location["residential_address"]
+                    if resident_location else ""
+                ),
+                placeholder="Enter your house address"
+            )
+
+            area = st.text_input(
+                "Community or Area",
+                value=(
+                    resident_location["area"]
+                    if resident_location else ""
+                ),
+                placeholder="Enter your community"
+            )
+
+            save_location = st.form_submit_button(
+                "Save New Location" if resident_location
+                else "Save My Location"
+            )
+
+            if save_location:
+
+                if not residential_address.strip():
+                    st.error("Please enter your residential address.")
+
+                elif not area.strip():
+                    st.error("Please enter your community.")
+
+                elif latitude is None or longitude is None:
+                    st.error(
+                        "Please capture your GPS location before saving."
                     )
 
-                    confidence, predicted_index = probabilities.max(
-                        dim=1
-                    )
+                else:
+                    try:
+                        save_resident_location(
+                            user_id=user_id,
+                            residential_address=residential_address.strip(),
+                            area=area.strip(),
+                            latitude=latitude,
+                            longitude=longitude,
+                            accuracy=accuracy
+                        )
 
-                predicted_class = class_names[
-                    predicted_index.item()
-                ]
+                        st.session_state.pop(
+                            "update_resident_location", None
+                        )
 
-                confidence_score = confidence.item() * 100
+                        st.success(
+                            "Your collection location has been updated!"
+                            if resident_location
+                            else "Your residential location has been saved!"
+                        )
 
-                st.session_state["predicted_class"] = predicted_class
-                st.session_state["confidence_score"] = confidence_score
+                        st.rerun()
 
-            except Exception as error:
-                st.error(f"Classification failed: {error}")
+                    except Exception as error:
+                        st.error(
+                            f"Location could not be saved: {error}"
+                        )
 
-    # DISPLAY CLASSIFICATION RESULT
-    if st.session_state.get("predicted_class"):
+        st.stop()
 
-        predicted_class = st.session_state["predicted_class"]
-        confidence_score = st.session_state["confidence_score"]
+    else:
 
-        st.success(
-            f"Identified Waste: {predicted_class}"
+        st.subheader("📍 Your Saved Collection Location")
+
+        st.success("Your residential location is saved.")
+
+        st.write(
+            "Address:",
+            resident_location["residential_address"]
         )
 
-        st.metric(
-            "Prediction Confidence",
-            f"{confidence_score:.2f}%"
+        st.write(
+            "Community:",
+            resident_location["area"]
         )
+
+        if st.button("📍 Update Collection Location"):
+
+            st.session_state["update_resident_location"] = True
+            st.rerun()
 
         st.divider()
 
-            # QUANTITY INPUT
+        # ----------------------------------
+        # 2. CAPTURE WASTE IMAGE
+        # ----------------------------------
 
-        st.subheader("Enter Waste Quantity")
+        st.subheader("Capture Recyclable Waste")
 
-        quantity_unit = st.selectbox(
-            "Select Unit",
-            ["Pieces", "Kilograms (kg)", "Bags"]
+        captured_image = st.camera_input(
+            "Take a picture of your waste",
+            key="waste2earn_camera"
         )
 
-        quantity_text = st.text_input(
-            "Enter quantity",
-            placeholder="e.g. 5"
-        )
+        if captured_image is not None:
 
-        if st.button("Submit to Waste2Earn"):
+            image_bytes = captured_image.getvalue()
 
-            if not quantity_text.strip():
-                st.warning("Please enter the quantity.")
+            image_signature = hashlib.sha256(
+                image_bytes
+            ).hexdigest()
 
-            elif not quantity_text.strip().isdigit():
-                st.warning("Please enter a whole number.")
+            # Reset old classification if a new image is captured
+            if st.session_state.get("waste2earn_image_signature") != image_signature:
 
-            elif int(quantity_text) <= 0:
-                st.warning("Please enter a quantity greater than zero.")
+                st.session_state["waste2earn_image_signature"] = image_signature
 
-            elif captured_image is None:
-                st.warning("Please capture a waste image.")
+                st.session_state.pop("predicted_class", None)
+                st.session_state.pop("confidence_score", None)
 
-            else:
+            image = Image.open(captured_image).convert("RGB")
+
+            # ----------------------------------
+            # 3. AI CLASSIFICATION
+            # ----------------------------------
+
+            if st.button("Classify Waste"):
+
                 try:
-                    quantity = int(quantity_text)
+                    input_tensor = transform(image).unsqueeze(0)
 
-                    report_id = save_waste_report(
-                        area="Waste2Earn",
-                        problem_type=predicted_class,
-                        description=f"Quantity: {quantity} {quantity_unit}",
-                        image_bytes=captured_image.getvalue(),
-                        image_content_type=captured_image.type,
-                        quantity=quantity,
-                        quantity_unit=quantity_unit
-                    )
+                    with torch.no_grad():
 
-                    st.success(
-                        f"Waste submitted successfully! "
-                        f"Reference ID: {report_id}"
-                    )
+                        outputs = model(input_tensor)
+
+                        probabilities = torch.softmax(outputs, dim=1)
+
+                        confidence, predicted_index = probabilities.max(dim=1)
+
+                    predicted_class = class_names[predicted_index.item()]
+
+                    # Store confidence as a decimal between 0 and 1
+                    confidence_score = confidence.item()
+
+                    st.session_state["predicted_class"] = predicted_class
+                    st.session_state["confidence_score"] = confidence_score
 
                 except Exception as error:
-                    st.error(
-                        f"Submission failed: {error}"
-                    )
+                    st.error(f"Classification failed: {error}")
+
+        # ----------------------------------
+        # 4. DISPLAY CLASSIFICATION
+        # ----------------------------------
+
+        if (
+            captured_image is not None
+            and st.session_state.get("predicted_class")
+        ):
+
+            predicted_class = st.session_state["predicted_class"]
+            confidence_score = st.session_state["confidence_score"]
+
+            st.success(f"Identified Waste: {predicted_class}")
+
+            st.metric(
+                "Prediction Confidence",
+                f"{confidence_score * 100:.2f}%"
+            )
+
+            st.divider()
+
+            # ----------------------------------
+            # 5. ENTER QUANTITY
+            # ----------------------------------
+
+            st.subheader("Enter Waste Quantity")
+
+            quantity_unit = st.selectbox(
+                "Select Unit",
+                ["Pieces", "kg", "Bags"]
+            )
+
+            quantity_text = st.text_input(
+                "Enter quantity",
+                placeholder="e.g. 5"
+            )
+
+            if st.button("Submit to Waste2Earn"):
+
+                if not quantity_text.strip():
+                    st.warning("Please enter the quantity.")
+
+                elif not quantity_text.strip().isdigit():
+                    st.warning("Please enter a whole number.")
+
+                elif int(quantity_text) <= 0:
+                    st.warning("Quantity must be greater than zero.")
+
+                else:
+                    try:
+                        quantity = int(quantity_text)
+
+                        image_path = upload_waste_image(
+                            uploaded_file=captured_image.getvalue(),
+                            user_id=user_id,
+                            content_type=captured_image.type
+                        )
+
+                        classification_id = save_waste_classification(
+                            user_id=user_id,
+                            category_name=predicted_class,
+                            image_path=image_path,
+                            confidence_score=confidence_score,
+                            model_version="MobileNetV3-Small"
+                        )
+
+                        submission_id = save_recycling_submission(
+                            user_id=user_id,
+                            classification_id=classification_id,
+                            quantity=quantity,
+                            quantity_unit=quantity_unit
+                        )
+
+                        st.success(
+                            "Your recycling submission was successful!"
+                        )
+
+                        st.write("Submission ID:", submission_id)
+                        st.write("Waste Category:", predicted_class)
+                        st.write("Quantity:", quantity, quantity_unit)
+
+                    except Exception as error:
+                        st.error(f"Submission failed: {error}")
 
 # Waste Map
 elif page == "Waste Map":
